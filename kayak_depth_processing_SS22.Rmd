@@ -1,0 +1,155 @@
+---
+title: "extracting average depth data from sonar transects"
+author: "MKAUFMAN"
+date: "April 22, 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+## setup
+```{r message=FALSE}
+
+library(htmlwidgets)
+library(plotly)
+library(rgdal)
+library(data.table)
+```
+
+## import a sonar log from csv (this must be created with the python library sllib ahead of time)
+
+```{r message=FALSE}
+#enter the time between initializing the sonar log file name and the start of actual logging. should be about 30 seconds
+sonartimeoffsetseconds<-30
+
+
+sonarfilename='Sonar_2022-08-02_08.48.55B.csv'
+rawlog=read.csv(file = sonarfilename,sep=',') 
+
+sonaryear=as.numeric(substr(sonarfilename,7,10))
+sonarmonth=as.numeric(substr(sonarfilename,12,13))
+sonarday=as.numeric(substr(sonarfilename,15,16))
+sonarhour=as.numeric(substr(sonarfilename,18,19))
+sonarminute=as.numeric(substr(sonarfilename,21,22))
+sonarsecond=as.numeric(substr(sonarfilename,24,25))
+
+sonarstart=substr(sonarfilename,7,25)
+
+sonarstart<-as.POSIXct(strptime(sonarstart, "%Y-%m-%d_%H.%M.%S"))
+sonarstart=sonarstart+sonartimeoffsetseconds
+
+
+#set coordinate system
+cord.dec = SpatialPoints(cbind(rawlog$longitude, rawlog$latitude), proj4string=CRS("+proj=longlat"))
+
+#convert to meters (UTM zone 10 north)
+cord.UTM <- spTransform(cord.dec, CRS("+init=epsg:32610"))
+
+log=rawlog
+log$UTMx=cord.UTM$coords.x1
+log$UTMy=cord.UTM$coords.x2
+log=log[which(log$framesize==3216),]
+
+#average depth
+superroughmeandepthm<-mean(log$water_depth_m)
+
+#create date/time object from start time (from file name), time offset, and elapsed milliseconds
+log <- log[order(log$time1),]
+log$elapsec<-log$time1/1000
+log$sonartime<-sonarstart+log$elapsec
+
+```
+
+## import a hobo depth file (this must be pre-processed in HOBOWARE, including the barometric compensation data assistant. It should have a depth (m) column by the time you are trying to import it here)
+```{r message=FALSE}
+
+rawhobo=read.csv(file = '21440089.csv',sep=',',skip=1) 
+colnames(rawhobo)<-c("read","datetimePST","AbsPresskPa","TempC","hoboDepthM")
+rawhobo$datetimePST<-paste(substr(rawhobo$datetimePST,0,6),"20",substr(rawhobo$datetimePST,7,20),sep="")
+
+rawhobo$datetimePST2<-as.POSIXct(strptime(rawhobo$datetimePST, "%m/%d/%Y %H:%M:%S"))
+hobodata<-rawhobo
+
+```
+##clean data
+```{r}
+#get minimum sonar reading
+mindepth=min(log$water_depth_m)
+#count min
+#sum(log$water_depth_m == mindepth)
+#remove all minimum entries, as these are "below minimum depth" readings from the sonar
+log$water_depth_m[log$water_depth_m == mindepth] <- NA
+
+#remove all very-small hobo depth readings
+hobodata$hoboDepthM[hobodata$hoboDepthM<0.1]<-NA
+```
+
+##merge hobo data to sonar data
+```{r}
+setDT(log)
+log[, time := sonartime]
+setkey(log, time)
+
+setDT(hobodata)
+hobodata[, time := datetimePST2]
+setkey(hobodata, time)
+
+alldata <- hobodata[log, roll = "nearest"]
+
+
+```
+
+##subset to a more manageble frequency and plot
+```{r}
+numpoints<-250
+spacing<-round(length(log[,1])/numpoints)
+i<-1
+alldata_subset<-alldata[1:(i+spacing)==(i+spacing),]
+#alldata_subset<-alldata
+
+fig <- plot_ly(type = 'scatter', mode = 'markers',marker=list(
+    color=alldata_subset$water_depth_m,
+    cmin = 0,
+    cmax = 7,
+    colorbar=list(
+      title='Colorbar'),
+    colorscale='Viridis',
+    reversescale=TRUE
+  )) 
+fig <- fig %>%
+  add_trace(
+    x = alldata_subset$UTMx, 
+    y = alldata_subset$UTMy,
+    hovertext = alldata_subset$water_depth_m
+   
+  )
+
+fig
+
+htmlwidgets::saveWidget(partial_bundle(fig), "C:/Users/kauf093/OneDrive - PNNL/Spatial Study 2022/10_Sonar/01_RawData/2022-08-02/S36/sonar.html")
+
+fig <- plot_ly(type = 'scatter', mode = 'markers',marker=list(
+    color=alldata_subset$hoboDepthM,
+    cmin = 0,
+    cmax = 7,
+    colorbar=list(
+      title='Colorbar'),
+    colorscale='Viridis',
+    reversescale=TRUE
+  )) 
+fig <- fig %>%
+  add_trace(
+    x = alldata_subset$UTMx, 
+    y = alldata_subset$UTMy,
+    hovertext = alldata_subset$hoboDepthM
+   
+  )
+
+fig
+htmlwidgets::saveWidget(partial_bundle(fig), "C:/Users/kauf093/OneDrive - PNNL/Spatial Study 2022/10_Sonar/01_RawData/2022-08-02/S36/hobo.html")
+```
+
