@@ -1,7 +1,7 @@
 ---
 title: "extracting average depth data from sonar transects"
 author: "MKAUFMAN"
-date: "April 22, 2021"
+date: "`r Sys.Date()`"
 output: html_document
 ---
 
@@ -19,7 +19,15 @@ library(plotly)
 library(rgdal)
 library(data.table)
 ```
+## set file name
+```{r message=FALSE}
+filename<-'Sonar_2022-08-02_12.34.00G.csv'
+folderpath<-'C:/Users/kauf093/OneDrive - PNNL/Spatial Study 2022/10_Sonar/01_RawData/2022-08-02/S34R/'
+filepath<-paste(folderpath,filename,sep='')
 
+```
+  
+  
 ## import a sonar log from csv (this must be created with the python library sllib ahead of time)
 
 ```{r message=FALSE}
@@ -27,7 +35,7 @@ library(data.table)
 sonartimeoffsetseconds<-30
 
 
-sonarfilename='Sonar_2022-08-02_08.48.55B.csv'
+sonarfilename=filepath
 rawlog=read.csv(file = sonarfilename,sep=',') 
 
 sonaryear=as.numeric(substr(sonarfilename,7,10))
@@ -63,93 +71,67 @@ log$elapsec<-log$time1/1000
 log$sonartime<-sonarstart+log$elapsec
 
 ```
-
-## import a hobo depth file (this must be pre-processed in HOBOWARE, including the barometric compensation data assistant. It should have a depth (m) column by the time you are trying to import it here)
-```{r message=FALSE}
-
-rawhobo=read.csv(file = '21440089.csv',sep=',',skip=1) 
-colnames(rawhobo)<-c("read","datetimePST","AbsPresskPa","TempC","hoboDepthM")
-rawhobo$datetimePST<-paste(substr(rawhobo$datetimePST,0,6),"20",substr(rawhobo$datetimePST,7,20),sep="")
-
-rawhobo$datetimePST2<-as.POSIXct(strptime(rawhobo$datetimePST, "%m/%d/%Y %H:%M:%S"))
-hobodata<-rawhobo
-
-```
 ##clean data
 ```{r}
+#remove the top 1% of values, as these are typically spurious
+log$water_depth_m[log$water_depth_m > quantile(log$water_depth_m, probs = 0.99)] <- NA 
+
 #get minimum sonar reading
 mindepth=min(log$water_depth_m)
 #count min
 #sum(log$water_depth_m == mindepth)
-#remove all minimum entries, as these are "below minimum depth" readings from the sonar
-log$water_depth_m[log$water_depth_m == mindepth] <- NA
+#replace all minimum entries with half of the minimum depth
+log$water_depth_m[log$water_depth_m == mindepth] <- mindepth/2
 
-#remove all very-small hobo depth readings
-hobodata$hoboDepthM[hobodata$hoboDepthM<0.1]<-NA
-```
+#add depth offset (5 inches)
+log$water_depth_m <- log$water_depth_m+0.127
 
-##merge hobo data to sonar data
-```{r}
-setDT(log)
-log[, time := sonartime]
-setkey(log, time)
+#make 1-meter rounded coordinate for aggregation
+log$UTMxR<-round(log$UTMx,0)
+log$UTMyR<-round(log$UTMy,0)
+log$group<-paste(log$UTMxR,log$UTMyR,sep=",")
 
-setDT(hobodata)
-hobodata[, time := datetimePST2]
-setkey(hobodata, time)
-
-alldata <- hobodata[log, roll = "nearest"]
-
+spatialmean<-aggregate(water_depth_m ~ group, data = log, mean)
+spatialmean$UTMx<-substr(spatialmean$group, 0, 6)
+spatialmean$UTMy<-substr(spatialmean$group, 8, 14)
 
 ```
 
-##subset to a more manageble frequency and plot
+#plot spatially-aggregated data
 ```{r}
-numpoints<-250
-spacing<-round(length(log[,1])/numpoints)
-i<-1
-alldata_subset<-alldata[1:(i+spacing)==(i+spacing),]
-#alldata_subset<-alldata
-
 fig <- plot_ly(type = 'scatter', mode = 'markers',marker=list(
-    color=alldata_subset$water_depth_m,
+    color=spatialmean$water_depth_m,
     cmin = 0,
-    cmax = 7,
+    cmax = max(spatialmean$water_depth_m),
     colorbar=list(
-      title='Colorbar'),
+      title='1m averaged depth (m)'),
     colorscale='Viridis',
     reversescale=TRUE
   )) 
 fig <- fig %>%
   add_trace(
-    x = alldata_subset$UTMx, 
-    y = alldata_subset$UTMy,
-    hovertext = alldata_subset$water_depth_m
+    x = spatialmean$UTMx, 
+    y = spatialmean$UTMy,
+  hovertext = spatialmean$water_depth_m
    
   )
 
 fig
 
-htmlwidgets::saveWidget(partial_bundle(fig), "C:/Users/kauf093/OneDrive - PNNL/Spatial Study 2022/10_Sonar/01_RawData/2022-08-02/S36/sonar.html")
-
-fig <- plot_ly(type = 'scatter', mode = 'markers',marker=list(
-    color=alldata_subset$hoboDepthM,
-    cmin = 0,
-    cmax = 7,
-    colorbar=list(
-      title='Colorbar'),
-    colorscale='Viridis',
-    reversescale=TRUE
-  )) 
-fig <- fig %>%
-  add_trace(
-    x = alldata_subset$UTMx, 
-    y = alldata_subset$UTMy,
-    hovertext = alldata_subset$hoboDepthM
-   
-  )
-
-fig
-htmlwidgets::saveWidget(partial_bundle(fig), "C:/Users/kauf093/OneDrive - PNNL/Spatial Study 2022/10_Sonar/01_RawData/2022-08-02/S36/hobo.html")
+savefilename<-paste(substr(filename,0,nchar(filename)-4),'.html',sep='')
+savefilepath<-paste(folderpath,savefilename,sep='')
+htmlwidgets::saveWidget(partial_bundle(fig), savefilepath)
 ```
 
+##export results table
+```{r message=FALSE}
+
+outfilename<-paste(substr(filename,0,nchar(filename)-4),'_mean.csv',sep='')
+outfilepath<-paste(folderpath,outfilename,sep='')
+notes <- data.frame(matrix(ncol = 2, nrow = 1))
+
+notes[1,1]<-"Sonar data cleaned (<detection set to half of detection limit), binned into 1-meter-square cells, then averaged. Average depth (m):"
+notes[1,2]<-mean(spatialmean$water_depth_m)
+write.table(notes, file = outfilepath, append = TRUE, quote = TRUE, sep = ",", row.names = FALSE, col.names = FALSE)
+
+```
