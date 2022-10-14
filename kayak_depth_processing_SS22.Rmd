@@ -21,8 +21,8 @@ library(data.table)
 ```
 ## set file name
 ```{r message=FALSE}
-filename<-'Sonar_2022-08-02_12.34.00G.csv'
-folderpath<-'C:/Users/kauf093/OneDrive - PNNL/Spatial Study 2022/10_Sonar/01_RawData/2022-08-02/S34R/'
+filename<-'Sonar_2022-08-10_09.09.51G.csv'
+folderpath<-'C:/Users/kauf093/OneDrive - PNNL/Spatial Study 2022/10_Sonar/01_RawData/2022-08-10/S23/'
 filepath<-paste(folderpath,filename,sep='')
 
 ```
@@ -77,11 +77,14 @@ log$sonartime<-sonarstart+log$elapsec
 log$water_depth_m[log$water_depth_m > quantile(log$water_depth_m, probs = 0.99)] <- NA 
 
 #get minimum sonar reading
-mindepth=min(log$water_depth_m)
+nozeros<-log
+nozeros$water_depth_m[nozeros$water_depth_m==0]<-NA
+
+mindepth=min(nozeros$water_depth_m,na.rm=TRUE)
 #count min
 #sum(log$water_depth_m == mindepth)
 #replace all minimum entries with half of the minimum depth
-log$water_depth_m[log$water_depth_m == mindepth] <- mindepth/2
+log$water_depth_m[log$water_depth_m <= mindepth] <- mindepth/2
 
 #add depth offset (5 inches)
 log$water_depth_m <- log$water_depth_m+0.127
@@ -92,8 +95,13 @@ log$UTMyR<-round(log$UTMy,0)
 log$group<-paste(log$UTMxR,log$UTMyR,sep=",")
 
 spatialmean<-aggregate(water_depth_m ~ group, data = log, mean)
-spatialmean$UTMx<-substr(spatialmean$group, 0, 6)
-spatialmean$UTMy<-substr(spatialmean$group, 8, 14)
+spatialmean$UTMx<-as.numeric(substr(spatialmean$group, 0, 6))
+spatialmean$UTMy<-as.numeric(substr(spatialmean$group, 8, 14))
+
+#for (i in 2:length(spatialmean$UTMx))
+#{
+# spatialmean$dist[i]<-sqrt((spatialmean$UTMx[i]-spatialmean$UTMx[i-1])^2+(spatialmean$UTMy[i]-spatialmean$UTMy[i-1])^2)
+#}
 
 ```
 
@@ -128,10 +136,12 @@ htmlwidgets::saveWidget(partial_bundle(fig), savefilepath)
 
 outfilename<-paste(substr(filename,0,nchar(filename)-4),'_mean.csv',sep='')
 outfilepath<-paste(folderpath,outfilename,sep='')
-notes <- data.frame(matrix(ncol = 2, nrow = 1))
+notes <- data.frame(matrix(ncol = 2, nrow = 2))
 
 notes[1,1]<-"Sonar data cleaned (<detection set to half of detection limit), binned into 1-meter-square cells, then averaged. Average depth (m):"
 notes[1,2]<-mean(spatialmean$water_depth_m)
+notes[2,1]<-'number of bins:'
+notes[2,2]<-length(spatialmean$water_depth_m)
 write.table(notes, file = outfilepath, append = TRUE, quote = TRUE, sep = ",", row.names = FALSE, col.names = FALSE)
 
 ```
